@@ -543,7 +543,6 @@ async fn get_or_create_environment(
     }
 
     let requirements: Vec<UnresolvedRequirementSpecification> = requirements
-        .clone()
         .into_iter()
         .map(UnresolvedRequirementSpecification::from)
         .collect();
