@@ -21,6 +21,7 @@ use uv_client::{BaseClientBuilder, Connectivity};
 use uv_configuration::Concurrency;
 use uv_installer::{SatisfiesResult, SitePackages};
 use uv_normalize::PackageName;
+use uv_python::Interpreter;
 use uv_python::{
     EnvironmentPreference, PythonDownloads, PythonEnvironment, PythonInstallation,
     PythonPreference, PythonRequest,
@@ -29,6 +30,7 @@ use uv_requirements::{RequirementsSource, RequirementsSpecification};
 use uv_tool::{entrypoint_paths, InstalledTools};
 use uv_warnings::warn_user;
 
+use crate::commands::pip;
 use crate::commands::pip::loggers::{
     DefaultInstallLogger, DefaultResolveLogger, SummaryInstallLogger, SummaryResolveLogger,
 };
@@ -540,40 +542,79 @@ async fn get_or_create_environment(
         }
     }
 
+    let requirements: Vec<UnresolvedRequirementSpecification> = requirements
+        .clone()
+        .into_iter()
+        .map(UnresolvedRequirementSpecification::from)
+        .collect();
+
     // Create a `RequirementsSpecification` from the resolved requirements, to avoid re-resolving.
     let spec = RequirementsSpecification {
-        requirements: requirements
-            .into_iter()
-            .map(UnresolvedRequirementSpecification::from)
-            .collect(),
+        requirements: requirements.clone(),
         ..spec
     };
 
     // TODO(zanieb): When implementing project-level tools, discover the project and check if it has the tool.
     // TODO(zanieb): Determine if we should layer on top of the project environment if it is present.
 
-    let environment = CachedEnvironment::get_or_create(
-        EnvironmentSpecification::from(spec),
-        interpreter,
-        settings,
-        &state,
-        if show_resolution {
-            Box::new(DefaultResolveLogger)
-        } else {
-            Box::new(SummaryResolveLogger)
-        },
-        if show_resolution {
-            Box::new(DefaultInstallLogger)
-        } else {
-            Box::new(SummaryInstallLogger)
-        },
-        connectivity,
-        concurrency,
-        native_tls,
-        cache,
-        printer,
-    )
-    .await?;
+    let create_environment = |spec: RequirementsSpecification, interpreter: Interpreter| {
+        CachedEnvironment::get_or_create(
+            EnvironmentSpecification::from(spec),
+            interpreter,
+            settings,
+            &state,
+            if show_resolution {
+                Box::new(DefaultResolveLogger)
+            } else {
+                Box::new(SummaryResolveLogger)
+            },
+            if show_resolution {
+                Box::new(DefaultInstallLogger)
+            } else {
+                Box::new(SummaryInstallLogger)
+            },
+            connectivity,
+            concurrency,
+            native_tls,
+            cache,
+            printer,
+        )
+    };
 
-    Ok((from, environment.into()))
+    let environment = create_environment(spec, interpreter).await;
+
+    let resolved_environment = match environment {
+        Ok(environment) => environment,
+        Err(
+            err @ ProjectError::Operation(pip::operations::Error::Resolve(
+                uv_resolver::ResolveError::NoSolution(_),
+            )),
+        ) => {
+            if python_request.is_some() {
+                return Err(err);
+            }
+
+            let interpreter = PythonInstallation::find_or_download(
+                Some(&PythonRequest::parse("3.12")),
+                EnvironmentPreference::OnlySystem,
+                python_preference,
+                python_downloads,
+                &client_builder,
+                cache,
+                Some(&reporter),
+            )
+            .await?
+            .into_interpreter();
+
+            let new_spec = RequirementsSpecification {
+                requirements,
+                ..RequirementsSpecification::default()
+            };
+
+            create_environment(new_spec, interpreter).await?
+        }
+        Err(e) => return Err(e),
+    };
+
+    Ok((from, resolved_environment.into()))
 }

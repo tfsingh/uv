@@ -1135,3 +1135,31 @@ fn tool_run_latest() {
     ----- stderr -----
     "###);
 }
+
+#[test]
+fn tool_run_download_latest() {
+    let context = TestContext::new("3.10");
+    let tool_dir = context.temp_dir.child("tools");
+    let bin_dir = context.temp_dir.child("bin");
+
+    context
+        .tool_run()
+        .arg("--python")
+        .arg("3.10")
+        .arg("posting")
+        .env("UV_TOOL_DIR", tool_dir.as_os_str())
+        .env("XDG_BIN_HOME", bin_dir.as_os_str())
+        .assert()
+        .failure();
+
+    uv_snapshot!(context.filters(), context.tool_run()
+        .arg("posting")
+        .env("UV_TOOL_DIR", tool_dir.as_os_str())
+        .env("XDG_BIN_HOME", bin_dir.as_os_str()), @r###"
+    success: true
+    exit_code: 0
+    ----- stdout -----
+
+    ----- stderr -----
+    "###);
+}
